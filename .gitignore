@@ -39,3 +39,10 @@
 
 # debug information files
 *.dwo
+
+# Acados
+pythonSim/c_generated_code
+pythonSim/acados_sim.json
+
+# Project
+.idea
