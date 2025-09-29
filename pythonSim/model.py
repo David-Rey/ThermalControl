@@ -17,16 +17,23 @@ T2 = ca.MX.sym("T2")
 pwm_value = ca.MX.sym("pwm_value")
 V_max = 10
 
-duty_cycle = pwm_value / 100.0  # Convert percentage to decimal
-V_eff = duty_cycle * V_max
+# The duty cycle is the fraction of time the pulse is on
+duty_cycle_abs = ca.fabs(pwm_value) / 100.0
 
-# Current calculations
-I_avg = (V_eff - alpha * (T2 - T1)) / R
-I_peak = (V_max - alpha * (T2 - T1)) / R
-I_rms = ca.fabs(duty_cycle) * (I_avg ** 2)
+# The peak voltage depends on the sign of the PWM input
+peak_voltage = ca.sign(pwm_value) * V_max
 
-T1_dot = (1/C) * (K * (T2 - T1) - (alpha * T1 * I_avg) + (0.5 * R * I_rms ** 2) + G * (Tinf - T1))
-T2_dot = (1/C) * (K * (T1 - T2) + (alpha * T2 * I_avg) + (0.5 * R * I_rms ** 2) + G * (Tinf - T2))
+# The current that flows when the pulse is on
+I_peak = (peak_voltage - alpha * (T2 - T1)) / R
+
+# The average current over a full cycle (for Peltier effect)
+I_avg = duty_cycle_abs * I_peak
+
+# The mean square of the current (for Joule heating)
+I_rms_sq = duty_cycle_abs * (I_peak ** 2)
+
+T1_dot = (1/C) * (K * (T2 - T1) - (alpha * T1 * I_avg) + (0.5 * R * I_rms_sq) + G * (Tinf - T1))
+T2_dot = (1/C) * (K * (T1 - T2) + (alpha * T2 * I_avg) + (0.5 * R * I_rms_sq) + G * (Tinf - T2))
 
 x = ca.vertcat(T1, T2)
 xdot = ca.MX.sym('xdot', 2)
