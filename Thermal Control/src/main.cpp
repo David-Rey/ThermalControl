@@ -185,7 +185,7 @@ static void outterLoop(void*){
     vTaskDelayUntil(&xLastWakeTime, xFrequency);
 
     startTime = millis() / 1000.0;
-    if (startTime > 10 && startTime < 30){
+    if (startTime > 10 && startTime < 50){
       currentSet = 1000.0;
     } else{
       currentSet = 0.0;
