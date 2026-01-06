@@ -15,7 +15,6 @@ class PeltierParams:
     K: float
     R: float
     n: float
-    m: float
     alpha: float
     G: float
     Tinf: float
@@ -44,7 +43,6 @@ class sysID:
     df_current: pd.DataFrame
     df_temp: pd.DataFrame
     start_time: float
-    init_params: PeltierParams
 
     start_current_step: float
     end_current_step: float
@@ -52,9 +50,8 @@ class sysID:
     run_length: float
     init_Tinf: float  # initial temperature
 
-    def __init__(self, file_path: str, init_params: PeltierParams):
+    def __init__(self, file_path: str):
         self.file_path = file_path
-        self.init_params = init_params
         self.get_data_frames()
         self.compensate_sensor_lag()
         self.get_current_times()
@@ -126,7 +123,9 @@ class sysID:
     def param_est_1(self):
 
         t_start = self.end_current_step + 5.0
-        df_relax = self.df_temp[self.df_temp['Time_Sec'] >= t_start].copy()
+        t_end = 175
+        mask = (self.df_temp['Time_Sec'] >= t_start) & (self.df_temp['Time_Sec'] <= t_end)
+        df_relax = self.df_temp[mask].copy()
         dt = 0.1
 
         t_raw = df_relax['Time_Sec'].to_numpy()
@@ -139,46 +138,39 @@ class sysID:
         T2_init = T2[0]
 
         def objective(x: np.ndarray) -> float:
-            a1, a2, a3, a4, n = float(x[0]), 0, 0, float(x[1]), float(x[2])
-            m = 1
-
-            C = 1
-            K = a1 * C
-            R = a2 * C
-            alpha = a3 * C
-            G = a4 * C
-            Tinf = self.init_Tinf
+            K, G, n = x
 
             # Run simulation
-            pelt_params = PeltierParams(C=C, K=K, R=R, n=n, m=m, alpha=alpha, G=G, Tinf=Tinf, tau=self.tau)
-            sim_params = SimParams(T1_init=T1_init, T2_init=T2_init, dt=dt, sim_length=sim_length, allow_current=False)
+            pelt_params = PeltierParams(
+                C=1, K=K, R=0, n=n, alpha=0, G=G,
+                Tinf=self.init_Tinf, tau=self.tau
+            )
+            sim_params = SimParams(
+                T1_init=T1_init, T2_init=T2_init, dt=dt,
+                sim_length=sim_length, allow_current=False
+            )
             res = self.run_sim(pelt_params, sim_params)
 
-            sim_temp_1 = res.temp_true[:, 0]
-            sim_temp_2 = res.temp_true[:, 1]
-            sim_time = res.time
+            s1 = np.interp(t, res.time, res.temp_true[:, 0])
+            s2 = np.interp(t, res.time, res.temp_true[:, 1])
 
-            sim_temp_1_interp = np.interp(t, sim_time, sim_temp_1)
-            sim_temp_2_interp = np.interp(t, sim_time, sim_temp_2)
+            total_sse = np.sum((s1 - T1) ** 2 + (s2 - T2) ** 2)
 
-            T1_residuals = sim_temp_1_interp - T1
-            T2_residuals = sim_temp_2_interp - T2
-
-            least_squares_diff = np.sum(T1_residuals ** 2) + np.sum(T2_residuals ** 2)
             """
             fig = plt.figure()
             ax = fig.add_subplot(111)
-            ax.plot(t, sim_temp_1_interp, label='T1', color=[1, 0.8, 0])
-            ax.plot(t, sim_temp_2_interp, label='T2', color=[1, 0.5, 0])
+            ax.plot(t, s1, label='T1', color=[1, 0.8, 0])
+            ax.plot(t, s2, label='T2', color=[1, 0.5, 0])
             ax.set_ylabel('Temperature (°C)')
             ax.set_xlabel('Time (seconds)')
             ax.grid(True, alpha=0.3)
             p.show_plot(rotate_axis_labels=False)
             """
-            return least_squares_diff
 
-        x0 = np.array([0.001, 0.05, 2])
-        bounds = [(0.0001, 1), (0.01, 1), (1.2, 2.5)]
+            return total_sse
+
+        x0 = np.array([0.001, 0.003, 2.4])
+        bounds = [(0.0001, 1), (0.0001, 1), (1.2, 3)]
         result = minimize(
             objective,
             x0=x0,
@@ -196,6 +188,83 @@ class sysID:
         """
         fig = plt.figure()
         ax = fig.add_subplot(111)
+        ax.plot(t, T1, label='T1', color=[1, 0.8, 0])
+        ax.plot(t, T2, label='T2', color=[1, 0.5, 0])
+        ax.set_ylabel('Temperature (°C)')
+        ax.set_xlabel('Time (seconds)')
+        ax.grid(True, alpha=0.3)
+        p.show_plot(rotate_axis_labels=False)
+        """
+
+        K = result.x[0]
+        G = result.x[1]
+        n = result.x[2]
+        return K, G, n
+
+    def param_est_2(self, K: float, G: float, n: float):
+        t_start = 0.0
+        t_end = self.end_current_step - 2.0
+
+        mask = (self.df_temp['Time_Sec'] >= t_start) & (self.df_temp['Time_Sec'] <= t_end)
+        df_relax = self.df_temp[mask].copy()
+        dt = 0.02
+
+        t_raw = df_relax['Time_Sec'].to_numpy()
+        t = t_raw - t_raw[0]
+        sim_length = t[-1] - t[0]
+        T1 = df_relax['T1_Recon'].to_numpy()
+        T2 = df_relax['T2_Recon'].to_numpy()
+
+        T1_init = T1[0]
+        T2_init = T2[0]
+
+        def objective(x: np.ndarray) -> float:
+            R, alpha = x
+
+            # Run simulation
+            pelt_params = PeltierParams(
+                C=1, K=K, R=R, n=n, alpha=alpha, G=G,
+                Tinf=self.init_Tinf, tau=self.tau
+            )
+            sim_params = SimParams(
+                T1_init=T1_init, T2_init=T2_init, dt=dt,
+                sim_length=sim_length, allow_current=True
+            )
+            res = self.run_sim(pelt_params, sim_params)
+
+            s1 = np.interp(t, res.time, res.temp_true[:, 0])
+            s2 = np.interp(t, res.time, res.temp_true[:, 1])
+            """
+            fig = plt.figure()
+            ax = fig.add_subplot(111)
+            ax.plot(t, s1, label='T1', color=[1, 0.8, 0])
+            ax.plot(t, s2, label='T2', color=[1, 0.5, 0])
+            ax.set_ylabel('Temperature (°C)')
+            ax.set_xlabel('Time (seconds)')
+            ax.grid(True, alpha=0.3)
+            p.show_plot(rotate_axis_labels=False)
+            """
+
+            total_sse = np.sum((s1 - T1) ** 2 + (s2 - T2) ** 2)
+
+            return total_sse
+
+        x0 = np.array([0.4, -0.01])
+        bounds = [(0.01, 2), (-0.1, -0.001)]
+        result = minimize(
+            objective,
+            x0=x0,
+            bounds=bounds,
+            method='SLSQP',
+            options={
+                'disp': True,
+            }
+        )
+        print(result)
+
+        """
+        fig = plt.figure()
+        ax = fig.add_subplot(111)
         ax.plot(t, T1, label='T1', color=[0, 0.8, 0])
         ax.plot(t, T2, label='T2', color=[0, 0.5, 0])
         ax.set_ylabel('Temperature (°C)')
@@ -204,13 +273,9 @@ class sysID:
         p.show_plot(rotate_axis_labels=False)
         """
 
-        opt_a1 = result.x[0]
-        opt_a4 = result.x[1]
-        opt_n = result.x[2]
-        return opt_a1, opt_a4, opt_n
-
-    def find_K_G_least_squares(self):
-        pass
+        R = result.x[0]
+        alpha = result.x[1]
+        return R, alpha
 
     def run_sim(self, pelt_params: PeltierParams, sim_params: SimParams) -> ModelResults:
         dt = sim_params.dt
@@ -230,7 +295,7 @@ class sysID:
         state_mes_arr = np.full((num_steps, 2), initial_state)
 
         for i in range(1, num_steps):
-            I_avg = current_profile[i - 1]
+            I_avg = float(current_profile[i - 1])
 
             # Step Peltier Dynamics
             state_arr[i] = self.rk4_peltier(state_arr[i - 1], I_avg, dt, pelt_params)
@@ -267,9 +332,12 @@ class sysID:
         p.show_plot(rotate_axis_labels=False)
 
     def draw_results(self, results: ModelResults, overlay=True, show_true=False):
-        time_arr = results.time
-        state_arr = results.temp_true
-        state_mes_arr = results.temp_measure
+        time_cutoff = 175
+        mask = results.time <= time_cutoff
+
+        time_arr = results.time[mask]
+        state_arr = results.temp_true[mask]
+        state_mes_arr = results.temp_measure[mask]
 
         fig = plt.figure()
         ax = fig.add_subplot(111)
@@ -277,20 +345,19 @@ class sysID:
             ax.plot(time_arr, state_arr[:, 0], label='T1', color=[0, 0.8, 0])
             ax.plot(time_arr, state_arr[:, 1], label='T2', color=[0, 0.5, 0])
 
-        ax.plot(time_arr, state_mes_arr[:, 0], label='T1_mes', color=[0, 0.8, 0], linestyle='--')
-        ax.plot(time_arr, state_mes_arr[:, 1], label='T2_mes', color=[0, 0.5, 0], linestyle='--')
+        ax.plot(time_arr, state_mes_arr[:, 0], label='T1_sim', color=[0, 0.8, 0], linestyle='--')
+        ax.plot(time_arr, state_mes_arr[:, 1], label='T2_sim', color=[0, 0.5, 0], linestyle='--')
 
         if overlay:
-            ax.plot(self.df_temp['Time_Sec'], self.df_temp['Temp1'], label='Sensor 1', color=[0.5, 0.8, 0])
-            #ax.plot(self.df_temp['Time_Sec'], self.df_temp['T1_Recon'], label='Sensor 1', color=[0.5, 0.8, 0])
-            ax.plot(self.df_temp['Time_Sec'], self.df_temp['Temp2'], label='Sensor 2', color=[0.5, 0.5, 0])
-            #ax.plot(self.df_temp['Time_Sec'], self.df_temp['T2_Recon'], label='Sensor 2', color=[0.5, 0.5, 0])
+            df_mask = self.df_temp['Time_Sec'] <= time_cutoff
+            df_subset = self.df_temp[df_mask]
+            ax.plot(df_subset['Time_Sec'], df_subset['Temp1'], label='Sensor 1', color=[0.5, 0.8, 0])
+            ax.plot(df_subset['Time_Sec'], df_subset['Temp2'], label='Sensor 2', color=[0.5, 0.5, 0])
 
         ymin, ymax = ax.get_ylim()
         ax.plot([self.start_current_step, self.start_current_step], [ymin, ymax], linestyle='--', color='k', alpha=0.5)
         ax.plot([self.end_current_step, self.end_current_step], [ymin, ymax], linestyle='--', color='k', alpha=0.5)
         ax.set_ylim(ymin, ymax)
-        #ax.set_xlim(0, 60)
 
         ax.set_ylabel('Temperature (°C)')
         ax.set_xlabel('Time (seconds)')
@@ -325,20 +392,15 @@ class sysID:
         T2 = T[1]
         dT_internal = T2 - T1
 
-        dT1_diff = params.Tinf - T1
-        dT2_diff = params.Tinf - T2
-        G1_flow = params.G * np.sign(dT1_diff) * (np.abs(dT1_diff) ** params.m)
-        G2_flow = params.G * np.sign(dT2_diff) * (np.abs(dT2_diff) ** params.m)
-
         # Modeling heat flow as Q = K * sign(dT) * |dT|^n
         K_flow = params.K * np.sign(dT_internal) * (np.abs(dT_internal) ** params.n)
 
         dTdt[0] = (1 / params.C) * (K_flow - (params.alpha * T1 * I_avg) +
-                                    (0.5 * params.R * I_avg ** 2) + params.G * G1_flow)
+                                    (0.5 * params.R * I_avg ** 2) + params.G * (params.Tinf - T1))
 
         # For T2, the internal flow is simply the negative of the T1 flow
         dTdt[1] = (1 / params.C) * (-K_flow + (params.alpha * T2 * I_avg) +
-                                    (0.5 * params.R * I_avg ** 2) + params.G * G2_flow)
+                                    (0.5 * params.R * I_avg ** 2) + params.G * (params.Tinf - T2))
 
         return dTdt
 
@@ -352,29 +414,41 @@ if __name__ == '__main__':
     # TODO: do nonlinear curve fit to the dynamics without current (get n, K/C, and G/C)
     # TODO: After that find alpha and C 
 
+
+    file_path = 'peltier_run_3.csv'
+    sys = sysID(file_path)
+    K, G, n = sys.param_est_1()
+    R, alpha = sys.param_est_2(K, G, n)
+    pelt_params = PeltierParams(C=1, K=K, R=R, n=n, alpha=alpha, G=G, Tinf=sys.init_Tinf, tau=sys.tau)
+
+    Tinf = sys.init_Tinf
+    sim_length = sys.run_length
+    dt = 0.01
+
+    sim_params = SimParams(
+        T1_init=Tinf, T2_init=Tinf, dt=dt,
+        sim_length=sim_length, allow_current=True
+    )
+
+    res = sys.run_sim(pelt_params, sim_params)
+    sys.draw_results(res, overlay=True, show_true=False)
+    sys.draw_recon()
+
     # parameters known
-    R = 2  # Peltier Resistance [Ohm]
-    Tinf = 24.3  # Ambient Temperature [C]
+    #R = 2  # Peltier Resistance [Ohm]
+    #Tinf = 24.3  # Ambient Temperature [C]
 
     # parameters estimate
-    alpha = 0.075  # Seebeck Coefficient [V/K]
-    K = 0.005  # Thermal Conductance [W/K]
-    C = 5  # Thermal Capacitance [J/K]
-    n = 1.8
-    m = 1
-    G = 0.019  # Ambient Conductance [W/K]
-    tau = 5  # Sensor delay
+    #alpha = 0.075  # Seebeck Coefficient [V/K]
+    #K = 0.005  # Thermal Conductance [W/K]
+    #C = 5  # Thermal Capacitance [J/K]
+    #n = 1.8
+    #m = 1
+    #G = 0.019  # Ambient Conductance [W/K]
+    #tau = 5  # Sensor delay
 
     #params = PeltierParams(C=C, C_atm=C_atm, K_atm=K_atm, K=K, R=R, alpha=alpha, G=G, Tinf=Tinf, tau=tau, J=J)
-    params = PeltierParams(C=C, K=K, R=R, n=n, m=m, alpha=alpha, G=G, Tinf=Tinf, tau=tau)
-    file_path = 'peltier_run_3.csv'
-    sys = sysID(file_path, params)
-    sys.param_est_1()
-    #sys.find_C_alpha(R)
-    #sys.find_K_G_least_squares(C)
-    #res = sys.run_sim(params)
-    #sys.draw_results(res, overlay=True, show_true=True)
-    #sys.draw_recon()
+
 
     """
     dt = 0.01
@@ -546,4 +620,15 @@ if __name__ == '__main__':
         print(f"Fitted G: {G_fitted:.6f} W/K")
 
         return K_fitted, G_fitted
+    """
+
+    """
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(t, sim_temp_1_interp, label='T1', color=[1, 0.8, 0])
+    ax.plot(t, sim_temp_2_interp, label='T2', color=[1, 0.5, 0])
+    ax.set_ylabel('Temperature (°C)')
+    ax.set_xlabel('Time (seconds)')
+    ax.grid(True, alpha=0.3)
+    p.show_plot(rotate_axis_labels=False)
     """
