@@ -249,7 +249,7 @@ class sysID:
 
             return total_sse
 
-        x0 = np.array([0.6, -0.01])
+        x0 = np.array([0.4, -0.01])
         bounds = [(0.01, 2), (-0.1, -0.001)]
         result = minimize(
             objective,
@@ -411,14 +411,13 @@ class sysID:
 
 
 if __name__ == '__main__':
-    # TODO: do nonlinear curve fit to the dynamics without current (get n, K/C, and G/C)
-    # TODO: After that find alpha and C 
 
     file_path = 'peltier_run_3.csv'
     sys = sysID(file_path)
+    Tinf = sys.init_Tinf
     Kc, Gc, n = sys.param_est_1()
     Rc, alpha_c = sys.param_est_2(Kc, Gc, n)
-    pelt_params = PeltierParams(C=1, K=Kc, R=Rc, n=n, alpha=alpha_c, G=Gc, Tinf=sys.init_Tinf, tau=sys.tau)
+    pelt_params = PeltierParams(C=1, K=Kc, R=Rc, n=n, alpha=alpha_c, G=Gc, Tinf=Tinf, tau=sys.tau)
 
     R = 2  # Measured
     C = R / Rc
@@ -428,12 +427,12 @@ if __name__ == '__main__':
 
     print(f"Polytropic Index (n):         {n:.4f}")
     print(f"Thermal Capacitance (C):      {C:.4f} J/K")
-    print(f"Thermal Conductance (K):      {K:.4f} W/K")
-    print(f"Ambient Conductance (G):      {G:.4f} W/K")
+    print(f"Thermal Conductance (K):      {K:.6f} W/K")
+    print(f"Ambient Conductance (G):      {G:.5f} W/K")
     print(f"Electrical Resistance (R):    {R:.4f} Ω")
     print(f"Seebeck Coefficient (alpha):  {alpha:.6f} V/K")
+    print(f"Ambient Temperature (Tinf):   {Tinf:.4f} C")
 
-    Tinf = sys.init_Tinf
     sim_length = sys.run_length
     dt = 0.01
 
