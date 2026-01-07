@@ -6,7 +6,7 @@ from scipy.signal import savgol_filter
 from scipy.optimize import curve_fit
 from scipy.optimize import minimize
 import aerosandbox.tools.pretty_plots as p
-from trame_server.utils.logger import initial_state
+#from trame_server.utils.logger import initial_state
 
 
 @dataclass
@@ -249,7 +249,7 @@ class sysID:
 
             return total_sse
 
-        x0 = np.array([0.4, -0.01])
+        x0 = np.array([0.6, -0.01])
         bounds = [(0.01, 2), (-0.1, -0.001)]
         result = minimize(
             objective,
@@ -414,12 +414,24 @@ if __name__ == '__main__':
     # TODO: do nonlinear curve fit to the dynamics without current (get n, K/C, and G/C)
     # TODO: After that find alpha and C 
 
-
     file_path = 'peltier_run_3.csv'
     sys = sysID(file_path)
-    K, G, n = sys.param_est_1()
-    R, alpha = sys.param_est_2(K, G, n)
-    pelt_params = PeltierParams(C=1, K=K, R=R, n=n, alpha=alpha, G=G, Tinf=sys.init_Tinf, tau=sys.tau)
+    Kc, Gc, n = sys.param_est_1()
+    Rc, alpha_c = sys.param_est_2(Kc, Gc, n)
+    pelt_params = PeltierParams(C=1, K=Kc, R=Rc, n=n, alpha=alpha_c, G=Gc, Tinf=sys.init_Tinf, tau=sys.tau)
+
+    R = 2  # Measured
+    C = R / Rc
+    alpha = alpha_c * C
+    G = Gc * C
+    K = Kc * C
+
+    print(f"Polytropic Index (n):         {n:.4f}")
+    print(f"Thermal Capacitance (C):      {C:.4f} J/K")
+    print(f"Thermal Conductance (K):      {K:.4f} W/K")
+    print(f"Ambient Conductance (G):      {G:.4f} W/K")
+    print(f"Electrical Resistance (R):    {R:.4f} Ω")
+    print(f"Seebeck Coefficient (alpha):  {alpha:.6f} V/K")
 
     Tinf = sys.init_Tinf
     sim_length = sys.run_length
@@ -448,7 +460,6 @@ if __name__ == '__main__':
     #tau = 5  # Sensor delay
 
     #params = PeltierParams(C=C, C_atm=C_atm, K_atm=K_atm, K=K, R=R, alpha=alpha, G=G, Tinf=Tinf, tau=tau, J=J)
-
 
     """
     dt = 0.01
